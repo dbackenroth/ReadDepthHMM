@@ -11,36 +11,46 @@ source("CNVPlots.R")
 # the second time, calculates an adjustment factor based on the median
 # ratio of read count for inferred normal regions to the expected 
 # read count for those regions
-RDRunTwice <- function(bin.size=1000000, sample="33882A", override.factor=NA){
+RDRunTwice <- function(bin.size=100000, sample="33882A", override.factor=NA){
+  dir <- "Temp100KB/"
   if (!is.na(override.factor)){
     mult.factor <- override.factor
   } else mult.factor <- 1
-  f <- "temp.gc.uniques.Rdata"
+  #f <- "temp.gc.uniques.Rdata"
   #f <- "temp.gc.Rdata"
+  f <- "temp.gc.100000.Rdata"
   load(f)
-  browser()
   #rd <- LoadHighMapQ(bin.size)
   #rd$ReadCount <- rd$NumUniqueStarts
   #gc <- GCPredictions(rd)
   #save(gc, file=f)
   #browser()
-  gc <- filter(gc, NumBases==1000000) #, !chr%in%c("chrX", "chrY"))   # Sample, ReadCount, NumUniqueStarts, chr, BIN, start, end, PctGC, NumBases, Predicted
+  gc <- filter(gc, NumBases==bin.size) #, !chr%in%c("chrX", "chrY"))   # Sample, ReadCount, NumUniqueStarts, chr, BIN, start, end, PctGC, NumBases, Predicted
   fi <- FamilyInfoWithSex()
   gc <- filter(gc, !Sample %in% fi$Sample[fi$Status=="Failed"]) #, !chr %in% c("chrX", "chrY"))
   normal.samples <- filter(fi, Status=="Normal")$Sample
   norm <- Normalize(rd=gc, family.info=fi)
   norm <- filter(norm, Sample==sample) %>% arrange(chr, start)
   r1 <- RDRunHMM(dat=norm, mult.factor=mult.factor)
+  r1$l <- filter(r1$l, !chr=="chrY")
+  r1$emps <- filter(r1$emps, !chr=="chrY")
+  r1$segments <- GetSegments(r1$l) %>% mutate(Sample=sample)
+  print(segments)
   print(table(r1$l$State))
-  normal <- r1$l %>% filter(State=="TwoCopies")
-  adj.factor <- median(normal$NormGC/(normal$WindowMedian/mult.factor))
-  print(adj.factor)
-  r2 <- RDRunHMM(dat=norm, mult.factor=adj.factor)
-  num.copies <- c(ZeroCopies=0, OneCopy=1, TwoCopies=2, ThreeCopies=3, 
-                  FourCopies=4)
-  st <- num.copies[r2$l$State]
-  r2$segments <- GetSegments(r2$l) %>% mutate(Sample=sample)
-  short.segments <- filter(r2$segments, end-start < 5000000)
+  #num.copies <- c(ZeroCopies=0, OneCopy=1, TwoCopies=2, ThreeCopies=3, 
+  #                FourCopies=4)
+  #st <- num.copies[r1$l$State]
+  #plot(st)
+  p <- PlotHMMResults(r1$l %>% mutate(Sample=sample))
+  p
+  ggsave(paste0(dir, "/Results.pdf"), height=4, width=8)
+  # normal <- r1$l %>% filter(State=="TwoCopies")
+  # adj.factor <- median(normal$NormGC/(normal$WindowMedian/mult.factor))
+  # print(adj.factor)
+  # r2 <- RDRunHMM(dat=norm, mult.factor=adj.factor)
+  # 
+  # r2$segments <- GetSegments(r2$l) %>% mutate(Sample=sample)
+  short.segments <- filter(r1$segments, end-start < 5000000)
   source("CNVPlots.R")
   for (i in 1:nrow(short.segments)){
     print(i)
@@ -48,44 +58,26 @@ RDRunTwice <- function(bin.size=1000000, sample="33882A", override.factor=NA){
     start <- short.segments$start[i]
     end <- short.segments$end[i]
     ref.samples <- setdiff(normal.samples, sample)
+    State <- short.segments$State[i]
     PlotCNVWithRibbon(chr=chr, cnv.start=start, cnv.end=end, 
                        plot.start=start-1000000, plot.end=end+1000000, 
-                       cnv.sample=sample, ref.samples=ref.samples)
-  browser()
-    ggsave(paste0("ShortCNVsNOTUNIQUE/", i, ".pdf"))
+                       cnv.sample=sample, ref.samples=ref.samples, state=State)
+    ggsave(paste0(dir, i, ".pdf"))
   }
-  #p <- PlotHMMResults(r2$l)
-  r2
-  #list(hmm.res=r2, plot=p)
+  browser()
 }
 
 RDRunHMM <- function(dat, mult.factor){
   dat <- select(dat, chr, start, end, NormGC, WindowMedian, WindowSD)
   stopifnot(is.numeric(mult.factor) & length(mult.factor)==1)
   dat$WindowMedian <- dat$WindowMedian * mult.factor
-  dat <- dat %>% 
-    mutate(Deviation=abs(NormGC-WindowMedian))
-  # probably better without intercept
-  sd.mean.fit <- lm(Deviation ~ WindowMedian+0, data=dat)
-  #library(nnls)
   
-  #sd.mean.fit <- nnlm(Deviation)
-  #gaulss.fit1 <- gam(list(NormGC~s(WindowMedian), ~s(WindowMedian)+s(WindowSD)), data=dat, family=gaulss())
-  #gaulss.fit2 <- gam(list(NormGC~s(WindowMedian), ~s(WindowMedian)), data=dat, family=gaulss())
-  #b <- gam(list(accel~s(times,k=20,bs="ad"),~s(times)),
-  #         data=mcycle,family=gaulss())
-  #bb1 <- predict(gaulss.fit1, newdata=dat, type="response")
-  #bb2 <- predict(gaulss.fit2, newdata=dat, type="response")
-  #sum(mydnbinomlog(x=dat$NormGC, mean=dat$WindowMedian, sd=bb1))
-  #sd.pred <- predict(sd.mean.fit, newdata=dat)
-  #plot(sd.pred, 1/bb[, 2])
-  
-  #browser()
-  emps <- GetEmissionProbabilities(dat, sd.mean.fit)
+  emps <- GetEmissionProbabilities(dat)
   tm <- RDTransitionMatrix()
   ip <- RDInitialStateProb()
   l <- list()
   all.emps <- list()
+  cat("Running Viterbi algorithm\n")
   for (Chr in unique(dat$chr)){
     chr.dat <- filter(emps, chr==Chr) %>% arrange(start)
     chr.emps <- select(chr.dat, Del2, Del1, Normal, Dup1, Dup2) %>% as.matrix()
@@ -99,28 +91,62 @@ RDRunHMM <- function(dat, mult.factor){
 }
 
 GetEmissionProbabilities <- function(dat, sd.mean.fit){
-  dat <- select(dat, chr, start, end, NormGC, WindowMedian)
+  cat("Calculating emissions probabilities\n")
+  dat <- select(dat, chr, start, end, NormGC, WindowMedian, WindowSD)
+  dat <- dat %>% 
+    mutate(Deviation=abs(NormGC-WindowMedian))
+  
+  sd.mean.fit <- lm(Deviation ~ WindowMedian+0, data=dat)
+  cat("Fitting Gaussian location scale additive model\n")
+  #sampled.dat <- dat[sample(nrow(dat), 5000), ]
+  gaulss.fit <- gam(list(NormGC~s(WindowMedian), ~s(WindowMedian)+s(WindowSD)), data=dat, family=gaulss())
+  
+  
+  #sum(mydnbinomlog(x=dat$NormGC, mean=dat$WindowMedian, sd=bb1))
+ 
   mydnbinomlog <- function(x, mean, sd){
     #dnorm(x, mean=mean, sd=sd, log=T)
-    size <- mean^2 - (sd^2 - mean)
+    size <- mean^2 / (sd^2 - mean)
+    size[size<0] <- Inf    # use Poisson if underdispersed
     dnbinom(x=x, size=size, mu=mean, log=T)
   }
-  CalcLogProbs <- function(x, mean, fit){
-    mydnbinomlog(x=round(x), mean=mean, sd=predict(fit, newdata=data.frame(WindowMedian=mean)))
+  CalcLogProbs <- function(x, newdata, fit, type="lm"){
+    if (type=="lm"){
+      sd.predicted <- predict(fit, newdata=newdata)
+    }
+    if (type=="gaulss"){
+      sd.predicted <- 1 / (predict(fit, newdata=newdata, type="response")[, 2])
+    }
+    logprobs <- mydnbinomlog(x=round(x), mean=newdata$WindowMedian, 
+                 sd=sd.predicted)
+    logprobs
   }
   cond <- dat$NormGC > 0 & dat$WindowMedian==0
   good.rows <- which(!cond)
   
-  dat$Normal <- 0
-  dat$Del1 <- 0
-  dat$Del2 <- 0
-  dat$Dup1 <- 0
-  dat$Dup2 <- 0
-  dat$Normal[good.rows] <- CalcLogProbs(x=dat$NormGC[good.rows], mean=dat$WindowMedian[good.rows], fit=sd.mean.fit)
-  dat$Del1[good.rows] <- CalcLogProbs(x=dat$NormGC[good.rows], mean=dat$WindowMedian[good.rows] / 2, fit=sd.mean.fit)
-  dat$Del2[good.rows] <- CalcLogProbs(x=dat$NormGC[good.rows], mean=dat$WindowMedian[good.rows]/10, fit=sd.mean.fit)
-  dat$Dup1[good.rows] <- CalcLogProbs(x=dat$NormGC[good.rows], mean=dat$WindowMedian[good.rows] * 3 / 2, fit=sd.mean.fit)
-  dat$Dup2[good.rows] <- CalcLogProbs(x=dat$NormGC[good.rows], mean=dat$WindowMedian[good.rows] * 2, fit=sd.mean.fit)
+  cnv.ratios <- c(Normal=1, Del1=0.5, Del2=0.1, Dup1=1.5, Dup2=2)  
+  dat[, names(cnv.ratios)] <- 0
+  
+  for (i in 1:length(cnv.ratios)){
+    dat[good.rows, names(cnv.ratios)[i]] <- 
+      CalcLogProbs(x=dat$NormGC[good.rows], 
+                   newdata=dat[good.rows, ] %>% 
+                     mutate(WindowMedian = WindowMedian * cnv.ratios[i], 
+                            WindowSD = WindowSD * cnv.ratios[i]), 
+                   #fit=sd.mean.fit, type="lm")
+                   fit=gaulss.fit, type="gaulss")
+  }
+  # 
+  # browser()
+  # dat$Normal[good.rows] <- CalcLogProbs(x=dat$NormGC[good.rows], 
+  #                                       newdata=dat[good.rows], fit=sd.mean.fit)
+  # dat$Del1[good.rows] <- CalcLogProbs(
+  #   x=dat$NormGC[good.rows], 
+  #   newdata=dat[good.rows] %>% mutate(WindowMedian=WindowMedian / 2), 
+  #   fit=sd.mean.fit)
+  # dat$Del2[good.rows] <- CalcLogProbs(x=dat$NormGC[good.rows], mean=dat$WindowMedian[good.rows]/10, fit=sd.mean.fit)
+  # dat$Dup1[good.rows] <- CalcLogProbs(x=dat$NormGC[good.rows], mean=dat$WindowMedian[good.rows] * 3 / 2, fit=sd.mean.fit)
+  # dat$Dup2[good.rows] <- CalcLogProbs(x=dat$NormGC[good.rows], mean=dat$WindowMedian[good.rows] * 2, fit=sd.mean.fit)
   
   dat
 }
@@ -188,6 +214,7 @@ GetSegments <- function(l){
 }
 
 Normalize <- function(rd, family.info){
+  cat("Normalizing read count\n")
   normal.samples <- family.info$Sample[family.info$Status=="Normal"]
   male.samples <- filter(family.info, Sex=="Male")$Sample
   female.samples <- filter(family.info, Sex=="Female")$Sample

@@ -38,11 +38,24 @@ PlotHMMResults <- function(l){
     xlab("") + 
     theme(panel.grid.major = element_blank(), 
           panel.grid.minor = element_blank())
+  p
 }
+
+TempPlot <- function(){
+  load("tempcnv.Rdata")
+  p1 <- PlotCNVWithRibbon(chr=chr, cnv.start=start, cnv.end=end, 
+                    plot.start=start-2000000, plot.end=end+2000000, 
+                    cnv.sample=sample, ref.samples=ref.samples)
+  browser()
+}
+
 
 PlotCNVWithRibbon <- function(chr, cnv.start, cnv.end, 
                    plot.start, plot.end, 
-                   cnv.sample, ref.samples){
+                   cnv.sample, ref.samples, state){
+  gaps <- read.table("gaps.txt", stringsAsFactors=F)[, c(2,3,4, 8)]
+  colnames(gaps) <- c("Chr", "start", "end", "type")
+  gaps <- filter(gaps, Chr==chr, end >= plot.start, start <= plot.end)
   bins <- data.frame(start=seq(plot.start, plot.end, by=5000))
   bins$end <- bins$start + 5000
   cnv.dat <- GetRegionWithTabixSamples(samples=c(ref.samples, cnv.sample), 
@@ -57,10 +70,13 @@ PlotCNVWithRibbon <- function(chr, cnv.start, cnv.end,
               Ref90=quantile(ReadPct[Sample %in% ref.samples], 0.9), 
               Ref10=quantile(ReadPct[Sample %in% ref.samples], 0.1), 
               CNVSample=ReadPct[Sample==cnv.sample])
-  cnv.summ <- mutate(cnv.summ, RatioSample=CNVSample/RefMedian, 
-                     Ratio10=Ref10/RefMedian, 
-                     Ratio90=Ref90/RefMedian)
-  p <- ggplot(filter(cnv.summ, MapQabove9), aes(x=start, y=CNVSample)) + geom_point()  + geom_ribbon(aes(x=start, ymin=Ref10, ymax=Ref90), alpha=0.3) + geom_vline(xintercept=c(cnv.start, cnv.end)) + scale_y_sqrt()
+  plot.max <- max(filter(cnv.summ, MapQabove9)[, c("CNVSample", "Ref10", "Ref90")])
+  high.mapq <- filter(cnv.summ, MapQabove9)
+  p <- ggplot(NULL) + geom_point(data=high.mapq, aes(x=start, y=CNVSample))  + geom_ribbon(data=high.mapq, aes(x=start, ymin=Ref10, ymax=Ref90), alpha=0.3) + geom_vline(xintercept=c(cnv.start, cnv.end)) + scale_y_sqrt() + xlab(chr) + ylab("") + ggtitle(state)
+  if (nrow(gaps)>0){
+    p <- p + geom_rect(data=gaps, aes(xmin=start, xmax=end, ymin=0, ymax=plot.max, fill=type))
+  }
+  p
 }
 
 
